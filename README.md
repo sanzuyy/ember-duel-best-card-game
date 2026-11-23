@@ -1,6 +1,10 @@
 # Ember Duel
 
-An original card-battle game for the make.fun best-card-game bounty.
+[![make.fun · best-card-game-20261122-1826](https://make.fun/badge/best-card-game-20261122-1826.svg)](https://make.fun/bounty/best-card-game-20261122-1826?utm_source=github&utm_medium=readme&utm_campaign=best-card-game-20261122-1826)
+[![rank](https://make.fun/badge/best-card-game-20261122-1826/sanzuyy/ember-duel-best-card-game/rank.svg)](https://make.fun/bounty/best-card-game-20261122-1826/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=best-card-game-20261122-1826)
+[![reward](https://make.fun/badge/best-card-game-20261122-1826/sanzuyy/ember-duel-best-card-game/reward.svg)](https://make.fun/bounty/best-card-game-20261122-1826?utm_source=github&utm_medium=readme&utm_campaign=best-card-game-20261122-1826)
+
+An original card-battle game for the [make.fun](https://make.fun/bounty/best-card-game-20261122-1826) best-card-game bounty.
 
 **Rules:** You and the Rival each have 30 life. Every round you play one card
 from your hand of 5 (click, or keys 1–5); the Rival plays one of theirs.
