@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ember Duel — a card battle</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #141021; }
+  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="Ember Duel: a card battle against the rival. Play a card each round; higher power wins the round."></canvas>
+<p id="status" role="status" aria-live="polite"></p>
+<script>
+'use strict';
+// Ember Duel — an original card duel. No network, no assets: all art is drawn in code.
+// Rules: you and the Rival each have 30 life. Every round you play one card from your
+// hand of 5; the Rival plays one of theirs. Higher power wins the round and the loser
+// loses life equal to the difference (a tie costs both 1). Suits form a cycle:
+// Flame beats Leaf, Leaf beats Tide, Tide beats Stone, Stone beats Flame — a winning
+// suit adds +2 power. First to 0 life loses. Keys 1-5 play a card, Enter starts, R restarts.
+
+const W = 1280, H = 720;
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+
+const SUITS = [
+  { name: 'Flame', color: '#ff6b35', beats: 'Leaf' },
+  { name: 'Leaf',  color: '#7bc950', beats: 'Tide' },
+  { name: 'Tide',  color: '#4aa8ff', beats: 'Stone' },
+  { name: 'Stone', color: '#b8a88a', beats: 'Flame' },
+];
+const NAMES = {
+  Flame: ['Spark','Cinder','Blaze','Pyre','Inferno','Ash','Coal','Flare','Wildfire'],
+  Leaf:  ['Sprout','Vine','Thorn','Grove','Bramble','Fern','Moss','Oak','Willow'],
+  Tide:  ['Ripple','Brook','Stream','Wave','Surge','Foam','Current','Deep','Storm'],
+  Stone: ['Pebble','Rock','Boulder','Crag','Granite','Flint','Marble','Basalt','Mountain'],
+};
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function buildDeck(rng) {
+  const deck = [];
+  for (const s of SUITS) for (let v = 1; v <= 9; v += 1) {
+    deck.push({ suit: s.name, color: s.color, value: v, name: NAMES[s.name][v - 1], id: s.name + v });
+  }
+  for (let i = deck.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(rng() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+  return deck;
+}
+
+function suitOf(name) { return SUITS.find((s) => s.name === name); }
+
+function newGame(seed) {
+  const rng = mulberry32(seed);
+  const deck = buildDeck(rng);
+  const g = {
+    rng, deck, seed,
+    screen: 'title', // title | play | win | loss
+    round: 1, wins: 0, losses: 0,
+    youLife: 30, foeLife: 30,
+    youHand: [], foeHand: [],
+    youPlayed: null, foePlayed: null,
+    log: 'Welcome to Ember Duel. Play a card to begin the duel.',
+    hover: -1, selected: -1, resolving: false,
+  };
+  for (let i = 0; i < 5; i += 1) { g.youHand.push(draw(g)); g.foeHand.push(draw(g)); }
+  return g;
+}
+
+function draw(g) {
+  if (g.deck.length === 0) g.deck = buildDeck(g.rng);
+  return g.deck.pop();
+}
+
+function effectivePower(card, other) {
+  let p = card.value;
+  if (suitOf(card.suit).beats === other.suit) p += 2;
+  return p;
+}
+
+function resolveRound(g) {
+  const you = g.youPlayed, foe = g.foePlayed;
+  const yp = effectivePower(you, foe), fp = effectivePower(foe, you);
+  if (yp > fp) {
+    const dmg = yp - fp; g.foeLife = Math.max(0, g.foeLife - dmg); g.wins += 1;
+    g.log = `${you.name} ${you.value} beats ${foe.name} ${foe.value} — Rival loses ${dmg} life.`;
+  } else if (fp > yp) {
+    const dmg = fp - yp; g.youLife = Math.max(0, g.youLife - dmg); g.losses += 1;
+    g.log = `${foe.name} ${foe.value} beats ${you.name} ${you.value} — you lose ${dmg} life.`;
+  } else {
+    g.youLife = Math.max(0, g.youLife - 1); g.foeLife = Math.max(0, g.foeLife - 1);
+    g.log = `Tie at ${yp} power — both lose 1 life.`;
+  }
+  g.round += 1;
+  g.youHand.push(draw(g)); g.foeHand.push(draw(g));
+  if (g.foeLife <= 0) { g.screen = 'win'; g.log = 'Victory! The Rival is defeated.'; }
+  else if (g.youLife <= 0) { g.screen = 'loss'; g.log = 'Defeat. Your life has run out.'; }
+  statusEl.textContent = g.log;
+}
+
+function playCard(g, idx) {
+  if (g.screen !== 'play' || g.resolving || idx < 0 || idx >= g.youHand.length) return;
+  g.resolving = true;
+  g.youPlayed = g.youHand.splice(idx, 1)[0];
+  const fi = Math.floor(g.rng() * g.foeHand.length);
+  g.foePlayed = g.foeHand.splice(fi, 1)[0];
+  resolveRound(g);
+  g.resolving = false;
+}
+
+// --- Screenshot scenes: deterministic autopilot over the real rules ---
+function autopilot(g, mode) {
+  // mode: 'play' (a few mid rounds), 'win' (best card until Rival falls), 'loss' (worst card until you fall)
+  let guard = 0;
+  while (g.screen === 'play' && guard < 200) {
+    guard += 1;
+    if (mode === 'play' && g.round > 6) break;
+    let idx = 0;
+    if (mode === 'win') {
+      let best = -1;
+      g.youHand.forEach((c, i) => { if (c.value > best) { best = c.value; idx = i; } });
+    } else if (mode === 'loss') {
+      let worst = 99;
+      g.youHand.forEach((c, i) => { if (c.value < worst) { worst = c.value; idx = i; } });
+    } else {
+      idx = Math.floor(g.rng() * g.youHand.length);
+    }
+    playCard(g, idx);
+  }
+}
+
+const params = new URLSearchParams(location.search);
+const seed = Number(params.get('seed') || '1') || 1;
+const shot = params.get('shot') || '';
+let game = newGame(seed);
+if (shot === 'play' || shot === 'win' || shot === 'loss') {
+  game.screen = 'play';
+  if (shot === 'loss') game.youLife = 5; // staged scene: a duel already nearly lost
+  autopilot(game, shot);
+  if (shot === 'play' && game.screen !== 'play') game = newGame(seed), game.screen = 'play', autopilot(game, 'play');
+} else if (shot === 'start') {
+  game.screen = 'title';
+}
+
+// --- Layout ---
+const CARD_W = 132, CARD_H = 186;
+function handPos(i, n) {
+  const gap = 16, total = n * CARD_W + (n - 1) * gap;
+  return { x: (W - total) / 2 + i * (CARD_W + gap), y: H - CARD_H - 26 };
+}
+const FOE_Y = 96;
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+
+function drawSuitMark(x, y, size, suit) {
+  ctx.save(); ctx.translate(x, y);
+  ctx.fillStyle = suitOf(suit).color;
+  if (suit === 'Flame') { ctx.beginPath(); ctx.moveTo(0, -size); ctx.quadraticCurveTo(size, -size * 0.2, size * 0.7, size * 0.6); ctx.quadraticCurveTo(0, size * 1.1, -size * 0.7, size * 0.6); ctx.quadraticCurveTo(-size, -size * 0.2, 0, -size); ctx.fill(); }
+  else if (suit === 'Leaf') { ctx.beginPath(); ctx.ellipse(0, 0, size * 0.8, size * 1.05, -0.6, 0, Math.PI * 2); ctx.fill(); }
+  else if (suit === 'Tide') { ctx.beginPath(); ctx.arc(-size * 0.4, 0, size * 0.55, 0, Math.PI * 2); ctx.arc(size * 0.4, 0, size * 0.55, 0, Math.PI * 2); ctx.fill(); ctx.fillRect(-size * 0.95, -size * 0.1, size * 1.9, size * 0.5); }
+  else { ctx.fillRect(-size * 0.8, -size * 0.8, size * 1.6, size * 1.6); }
+  ctx.restore();
+}
+
+function drawCard(card, x, y, faceUp, highlight) {
+  ctx.save();
+  if (highlight) { ctx.shadowColor = '#ffd166'; ctx.shadowBlur = 22; }
+  roundRect(x, y, CARD_W, CARD_H, 12); ctx.fillStyle = faceUp ? '#fdf6e3' : '#3a2d5c'; ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.lineWidth = 3; ctx.strokeStyle = faceUp ? suitOf(card.suit).color : '#ffd166'; ctx.stroke();
+  if (!faceUp) {
+    drawSuitMark(x + CARD_W / 2, y + CARD_H / 2, 26, 'Flame');
+    ctx.fillStyle = '#ffd166'; ctx.font = 'bold 15px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('EMBER DUEL', x + CARD_W / 2, y + CARD_H - 22);
+    ctx.restore(); return;
+  }
+  ctx.fillStyle = '#241a33'; ctx.textAlign = 'center';
+  ctx.font = 'bold 15px sans-serif';
+  ctx.fillText(card.name.toUpperCase(), x + CARD_W / 2, y + 26);
+  drawSuitMark(x + CARD_W / 2, y + 78, 24, card.suit);
+  ctx.font = 'bold 44px sans-serif'; ctx.fillStyle = suitOf(card.suit).color;
+  ctx.fillText(String(card.value), x + CARD_W / 2, y + 138);
+  ctx.font = 'bold 13px sans-serif'; ctx.fillStyle = '#5a4a6a';
+  ctx.fillText(card.suit.toUpperCase(), x + CARD_W / 2, y + 164);
+  ctx.font = '11px sans-serif'; ctx.fillStyle = '#8a7a9a';
+  ctx.fillText('beats ' + suitOf(card.suit).beats, x + CARD_W / 2, y + CARD_H - 10);
+  ctx.restore();
+}
+
+function drawLifeBar(x, y, w, life, color, label) {
+  ctx.fillStyle = '#241a33'; roundRect(x, y, w, 26, 8); ctx.fill();
+  const frac = Math.max(0, life / 30);
+  ctx.fillStyle = color; roundRect(x + 3, y + 3, (w - 6) * frac, 20, 6); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 15px sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText(`${label}  ${life} / 30`, x + 10, y + 19);
+}
+
+function drawTable() {
+  // felt table
+  ctx.fillStyle = '#1b6b3a'; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.ellipse(W / 2, H / 2, 560, 300, 0, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(W / 2, H / 2, 480, 240, 0, 0, Math.PI * 2); ctx.stroke();
+
+  // Rival (top)
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 22px sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText('RIVAL', 40, 40);
+  drawLifeBar(40, 52, 300, game.foeLife, '#ff5a5a', 'Life');
+  ctx.textAlign = 'right'; ctx.fillStyle = '#ffd166'; ctx.font = 'bold 18px sans-serif';
+  ctx.fillText(`Rounds won: ${game.losses}`, W - 40, 40);
+  ctx.fillText(`Round ${game.round}`, W - 40, 66);
+  game.foeHand.forEach((c, i) => {
+    const p = handPos(i, game.foeHand.length);
+    drawCard(c, p.x, FOE_Y, false, false);
+  });
+
+  // centre: played cards + log
+  const cx = W / 2;
+  if (game.youPlayed) {
+    drawCard(game.youPlayed, cx - CARD_W - 30, 300, true, false);
+    drawCard(game.foePlayed, cx + 30, 300, true, false);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 20px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('VS', cx, 400);
+  } else {
+    ctx.fillStyle = 'rgba(255,255,255,0.55)'; ctx.font = '20px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('Play a card from your hand — keys 1–5 or click', cx, 380);
+  }
+  ctx.fillStyle = '#fff'; ctx.font = '16px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText(game.log, cx, 500);
+
+  // Player (bottom)
+  ctx.textAlign = 'left'; ctx.fillStyle = '#fff'; ctx.font = 'bold 22px sans-serif';
+  ctx.fillText('YOU', 40, H - 232);
+  drawLifeBar(40, H - 220, 300, game.youLife, '#4ade80', 'Life');
+  ctx.textAlign = 'right'; ctx.fillStyle = '#ffd166'; ctx.font = 'bold 18px sans-serif';
+  ctx.fillText(`Rounds won: ${game.wins}   Score ${game.wins * 10}`, W - 40, H - 232);
+  game.youHand.forEach((c, i) => {
+    const p = handPos(i, game.youHand.length);
+    const lift = (game.hover === i || game.selected === i) ? -18 : 0;
+    drawCard(c, p.x, p.y + lift, true, game.hover === i);
+    ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(String(i + 1), p.x + CARD_W / 2, p.y + lift - 6);
+  });
+}
+
+function drawTitle() {
+  drawTable();
+  ctx.fillStyle = 'rgba(10,6,20,0.93)'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd166'; ctx.font = 'bold 84px sans-serif';
+  ctx.fillText('EMBER DUEL', W / 2, 220);
+  ctx.fillStyle = '#fff'; ctx.font = '28px sans-serif';
+  ctx.fillText('An original card battle — outplay the Rival, card by card.', W / 2, 280);
+  ctx.font = '20px sans-serif'; ctx.fillStyle = '#cfc4e8';
+  ctx.fillText('Higher power wins the round. Flame beats Leaf, Leaf beats Tide,', W / 2, 340);
+  ctx.fillText('Tide beats Stone, Stone beats Flame — a winning suit adds +2 power.', W / 2, 368);
+  ctx.fillText('Loser loses life equal to the difference. First to 0 life loses.', W / 2, 396);
+  // start button
+  roundRect(W / 2 - 150, 450, 300, 64, 12); ctx.fillStyle = '#ff6b35'; ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 26px sans-serif';
+  ctx.fillText('START DUEL  (Enter)', W / 2, 490);
+  ctx.fillStyle = '#cfc4e8'; ctx.font = '17px sans-serif';
+  ctx.fillText('Click a card or press 1–5 to play it.  R restarts.', W / 2, 560);
+}
+
+function drawEnd(win) {
+  drawTable();
+  ctx.fillStyle = win ? 'rgba(20,60,20,0.85)' : 'rgba(60,10,20,0.85)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = win ? '#4ade80' : '#ff5a5a'; ctx.font = 'bold 76px sans-serif';
+  ctx.fillText(win ? 'VICTORY!' : 'DEFEAT', W / 2, 280);
+  ctx.fillStyle = '#fff'; ctx.font = '26px sans-serif';
+  ctx.fillText(win ? `The Rival falls. You won ${game.wins} rounds to ${game.losses}.`
+                   : `Your life ran out. Rounds: you ${game.wins} — Rival ${game.losses}.`, W / 2, 340);
+  ctx.fillText(`Final score: ${game.wins * 10}`, W / 2, 382);
+  roundRect(W / 2 - 150, 430, 300, 64, 12); ctx.fillStyle = '#ff6b35'; ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 26px sans-serif';
+  ctx.fillText('PLAY AGAIN  (R)', W / 2, 470);
+}
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  if (game.screen === 'title') drawTitle();
+  else if (game.screen === 'win') drawEnd(true);
+  else if (game.screen === 'loss') drawEnd(false);
+  else drawTable();
+}
+
+function resize() {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = '100%'; canvas.style.height = '100%';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  render();
+}
+
+function toLogical(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (e.clientX - r.left) * (W / r.width), y: (e.clientY - r.top) * (H / r.height) };
+}
+
+canvas.addEventListener('mousemove', (e) => {
+  const p = toLogical(e);
+  game.hover = -1;
+  if (game.screen === 'play') {
+    game.youHand.forEach((c, i) => {
+      const pos = handPos(i, game.youHand.length);
+      if (p.x >= pos.x && p.x <= pos.x + CARD_W && p.y >= pos.y - 18 && p.y <= pos.y + CARD_H) game.hover = i;
+    });
+  }
+  render();
+});
+
+canvas.addEventListener('click', (e) => {
+  const p = toLogical(e);
+  if (game.screen === 'title') {
+    if (p.x >= W / 2 - 150 && p.x <= W / 2 + 150 && p.y >= 450 && p.y <= 514) { game.screen = 'play'; render(); }
+    return;
+  }
+  if (game.screen === 'win' || game.screen === 'loss') {
+    if (p.x >= W / 2 - 150 && p.x <= W / 2 + 150 && p.y >= 430 && p.y <= 494) { game = newGame(seed); game.screen = 'play'; render(); }
+    return;
+  }
+  if (game.hover >= 0) { playCard(game, game.hover); render(); }
+});
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && game.screen === 'title') { game.screen = 'play'; render(); }
+  else if ((e.key === 'r' || e.key === 'R') && game.screen !== 'title') { game = newGame(seed); game.screen = 'play'; render(); }
+  else if (game.screen === 'play' && ['1','2','3','4','5'].includes(e.key)) { playCard(game, Number(e.key) - 1); render(); }
+});
+
+window.addEventListener('resize', resize);
+resize();
+</script>
+</body>
+</html>
